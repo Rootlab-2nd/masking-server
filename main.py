@@ -46,8 +46,6 @@ async def consume_messages():
 
 @app.get("/metadata")
 async def get_metadata():
-    data = {}
-    data['wqe'] = ""
     return {}
 
 
@@ -131,6 +129,13 @@ def create_meta_data(
         "resolution": resolution,
         "frames": frames
     })
+
+
+def compareImage(
+        f1_path: str,
+        f2_path: str
+):
+    return DeepFace.verify(img1_path=f1_path, img2_path=f2_path, detector_backend='ssd', model_name='VGG-Face')['verified']
 
 
 def recognize_face(image):
