@@ -5,12 +5,17 @@ import asyncio
 import json
 import cv2
 from mtcnn import MTCNN
+from deepface import DeepFace
 import os
 import time
 import datetime
 import concurrent.futures
 import dotenv
 import boto3
+
+from model.Frame import Frame
+from model.Object import Object
+from model.Resolution import Resolution
 
 consumer = Consumer({'bootstrap.servers': '', 'group.id': ''})
 consumer.subscribe([''])
@@ -34,14 +39,16 @@ async def consume_messages():
         if message.error():
             print(f"Kafka Consumer error: {message.error()}")
             continue
-        user_data = json.loads(message.value())
-        user = User(**user_data)
-        await save_user(user)
+        # user_data = json.loads(message.value())
+        # user = User(**user_data)
+        # await save_user(user)
 
 
 @app.get("/metadata")
 async def get_metadata():
-    return {''}
+    data = {}
+    data['wqe'] = ""
+    return {}
 
 
 @app.post('/video')
@@ -108,9 +115,26 @@ def images_into_video(images, filename, fps):
     out.release()
 
 
+def create_meta_data(
+        video_name: str,
+        created_data: str,
+        frame_length: int,
+        fps: int,
+        resolution: Resolution,
+        frames: list(Frame),
+):
+    return json.dumps({
+        "videoName": video_name,
+        "createdData": created_data,
+        "frameLength": frame_length,
+        "fps": fps,
+        "resolution": resolution,
+        "frames": frames
+    })
+
+
 def recognize_face(image):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     detector = MTCNN()
     face_locations = [face_location['box'] for face_location in detector.detect_faces(image)]
     return face_locations
-
