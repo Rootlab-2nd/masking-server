@@ -5,6 +5,7 @@ import asyncio
 import json
 import cv2
 from mtcnn import MTCNN
+from deepface import DeepFace
 import os
 import time
 import datetime
@@ -34,14 +35,9 @@ async def consume_messages():
         if message.error():
             print(f"Kafka Consumer error: {message.error()}")
             continue
-        user_data = json.loads(message.value())
-        user = User(**user_data)
-        await save_user(user)
-
-
-@app.get("/metadata")
-async def get_metadata():
-    return {''}
+        # user_data = json.loads(message.value())
+        # user = User(**user_data)
+        # await save_user(user)
 
 
 @app.post('/video')
@@ -59,17 +55,19 @@ async def download_masked_video(file: UploadFile):
     with open(os.path.join('./video', file.filename), 'wb') as fp:
         fp.write(content)
 
-    images, fps = video_into_images(f'./video/{file.filename}')
+    images, fps, video_width, video_height = video_into_images(f'./video/{file.filename}')
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         face_locations_list = list(executor.map(recognize_face, images))
-
+    crop_img_idx = 0
+    create_folder(f'./images/{file.filename}')
     for i, face_locations in enumerate(face_locations_list):
         for j, face_location in enumerate(face_locations):
             x, y, width, height = face_location
             cropped = images[i][y:y + height, x:x + width]  # Crop the face
-            cv2.imwrite(f'./images/{i}:{j}.png', cropped)
+            cv2.imwrite(f'./images/{file.filename}/{i}:{j}.png', cropped)
             images[i][y:y + height, x:x + width] = 0  # Black out the face
+            crop_img_idx += 1
 
     images_into_video(images, f'./video/{file.filename.split(".")[0]}.mp4', fps=fps)
 
@@ -79,12 +77,37 @@ async def download_masked_video(file: UploadFile):
     result = datetime.timedelta(seconds=sec)
     print(result)
 
-    return FileResponse(f'./video/{file.filename.split(".")[0]}.mp4')
+    return {
+        "videoName": file.filename,
+        "createdDate": datetime.datetime.now().isoformat(),
+        "frameLength": len(images),
+        "fps": round(fps),
+        "resolution": {
+            "width": video_width,
+            "height": video_height
+        },
+        "frame": [{
+            'frameId': frame_idx,
+            'objects': [{
+                'objectId': object_idx,
+                'topLeftX': face_location[0],
+                'topLeftY': face_location[1],
+                'width': face_location[2],
+                'height': face_location[3],
+            }
+                for object_idx, face_location in enumerate(face_locations_list[frame_idx])
+            ]
+        }
+            for frame_idx, image in enumerate(images)
+        ]
+    }
 
 
 def video_into_images(video_path):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     count = 1
     images = []
     while cap.isOpened():
@@ -94,7 +117,7 @@ def video_into_images(video_path):
         images.append(frame)
         count += 1
     cap.release()
-    return images, fps
+    return images, fps, width, height
 
 
 def images_into_video(images, filename, fps):
@@ -108,9 +131,23 @@ def images_into_video(images, filename, fps):
     out.release()
 
 
+def compare_image(
+        f1_path: str,
+        f2_path: str
+):
+    return DeepFace.verify(img1_path=f1_path, img2_path=f2_path, detector_backend='ssd', model_name='VGG-Face')['verified']
+
+
 def recognize_face(image):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     detector = MTCNN()
     face_locations = [face_location['box'] for face_location in detector.detect_faces(image)]
     return face_locations
 
+
+def create_folder(directory):
+    try:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+    except OSError:
+        print('Error: Creating directory. ' + directory)
