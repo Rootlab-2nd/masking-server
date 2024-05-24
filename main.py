@@ -12,17 +12,21 @@ import datetime
 import concurrent.futures
 import dotenv
 import boto3
+from os import system
 
-consumer = Consumer({'bootstrap.servers': '', 'group.id': ''})
-consumer.subscribe([''])
-
+#
+# consumer = Consumer({'bootstrap.servers': '', 'group.id': ''})
+# consumer.subscribe([''])
+#
 app = FastAPI()
 
-client_s3 = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY")
-)
+
+#
+# client_s3 = boto3.client(
+#     's3',
+#     aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
+#     aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY")
+# )
 
 
 async def consume_messages():
@@ -135,7 +139,7 @@ def compare_image(
         f1_path: str,
         f2_path: str
 ):
-    return DeepFace.verify(img1_path=f1_path, img2_path=f2_path, detector_backend='ssd', model_name='VGG-Face')['verified']
+    return DeepFace.verify(img1_path=f1_path, img2_path=f2_path, detector_backend='ssd', model_name='Dlib')
 
 
 def recognize_face(image):
