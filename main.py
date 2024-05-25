@@ -1,3 +1,6 @@
+from collections import defaultdict
+
+import pandas as pd
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import FileResponse, Response
 from confluent_kafka import Consumer
@@ -29,19 +32,19 @@ app = FastAPI()
 # )
 
 
-async def consume_messages():
-    current_loop = asyncio.get_running_loop()
-    print("start consuming...")
-    while True:
-        message = await current_loop.run_in_executor(None, consumer.poll, 1.0)
-        if message is None:
-            continue
-        if message.error():
-            print(f"Kafka Consumer error: {message.error()}")
-            continue
-        # user_data = json.loads(message.value())
-        # user = User(**user_data)
-        # await save_user(user)
+# async def consume_messages():
+#     current_loop = asyncio.get_running_loop()
+#     print("start consuming...")
+#     while True:
+#         message = await current_loop.run_in_executor(None, consumer.poll, 1.0)
+#         if message is None:
+#             continue
+#         if message.error():
+#             print(f"Kafka Consumer error: {message.error()}")
+#             continue
+#         # user_data = json.loads(message.value())
+#         # user = User(**user_data)
+#         # await save_user(user)
 
 
 @app.post('/video')
@@ -61,17 +64,44 @@ async def download_masked_video(file: UploadFile):
 
     images, fps, video_width, video_height = video_into_images(f'./video/{file.filename}')
 
+    global_id_dict = defaultdict(int)
+    recent_frames = []
+    global_id = 0
+
     with concurrent.futures.ThreadPoolExecutor() as executor:
         face_locations_list = list(executor.map(recognize_face, images))
-    crop_img_idx = 0
     create_folder(f'./images/{file.filename}')
     for i, face_locations in enumerate(face_locations_list):
+        frame_cropped_paths = []
         for j, face_location in enumerate(face_locations):
             x, y, width, height = face_location
             cropped = images[i][y:y + height, x:x + width]  # Crop the face
-            cv2.imwrite(f'./images/{file.filename}/{i}:{j}.png', cropped)
+            cropped_path = f'./images/{file.filename}/{i}:{j}.png'
+            frame_cropped_paths.append(cropped_path)
+            cv2.imwrite(cropped_path, cropped)
             images[i][y:y + height, x:x + width] = 0  # Black out the face
-            crop_img_idx += 1
+
+            found = False
+            for frame in recent_frames:
+                for prev_cropped_path in frame:
+                    is_same = compare_image(cropped_path, prev_cropped_path)
+                    if is_same:
+                        print("Same Image Found", cropped_path, prev_cropped_path)
+                        global_id_dict[cropped_path] = global_id_dict[prev_cropped_path]
+                        found = True
+                        break
+                if found:
+                    break
+
+            if not found:
+                global_id_dict[cropped_path] = global_id
+                global_id += 1
+
+        recent_frames.append(frame_cropped_paths)
+
+        # 최근 3프레임만 유지
+        if len(recent_frames) > 3:
+            recent_frames.pop(0)
 
     images_into_video(images, f'./video/{file.filename.split(".")[0]}.mp4', fps=fps)
 
@@ -94,6 +124,7 @@ async def download_masked_video(file: UploadFile):
             'frameId': frame_idx,
             'objects': [{
                 'objectId': object_idx,
+                'globalId': global_id_dict[f'./images/{file.filename}/{frame_idx}:{object_idx}.png'],
                 'topLeftX': face_location[0],
                 'topLeftY': face_location[1],
                 'width': face_location[2],
@@ -139,7 +170,16 @@ def compare_image(
         f1_path: str,
         f2_path: str
 ):
-    return DeepFace.verify(img1_path=f1_path, img2_path=f2_path, detector_backend='ssd', model_name='Dlib')
+    try:
+        return DeepFace.verify(
+            img1_path=f1_path,
+            img2_path=f2_path,
+            detector_backend='mtcnn',
+            model_name='Dlib',
+            enforce_detection=False
+        )['verified']
+    except:
+        return False
 
 
 def recognize_face(image):
