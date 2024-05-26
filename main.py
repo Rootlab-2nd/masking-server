@@ -86,7 +86,6 @@ async def download_masked_video(file: UploadFile):
                 for prev_cropped_path in frame:
                     is_same = compare_image(cropped_path, prev_cropped_path)
                     if is_same:
-                        print("Same Image Found", cropped_path, prev_cropped_path)
                         global_id_dict[cropped_path] = global_id_dict[prev_cropped_path]
                         found = True
                         break
@@ -99,8 +98,8 @@ async def download_masked_video(file: UploadFile):
 
         recent_frames.append(frame_cropped_paths)
 
-        # 최근 3프레임만 유지
-        if len(recent_frames) > 3:
+        # 최근 10프레임만 유지
+        if len(recent_frames) > 10:
             recent_frames.pop(0)
 
     images_into_video(images, f'./video/{file.filename.split(".")[0]}.mp4', fps=fps)
@@ -174,7 +173,7 @@ def compare_image(
         return DeepFace.verify(
             img1_path=f1_path,
             img2_path=f2_path,
-            detector_backend='mtcnn',
+            detector_backend='ssd',
             model_name='Dlib',
             enforce_detection=False
         )['verified']
