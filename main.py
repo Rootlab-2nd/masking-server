@@ -1,28 +1,35 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse, Response
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, Producer
+from base64 import b64decode
 import asyncio
 import json
 import cv2
 from mtcnn import MTCNN
 from deepface import DeepFace
 import os
-import time
 import datetime
 import concurrent.futures
 import dotenv
 import boto3
 
-consumer = Consumer({'bootstrap.servers': '', 'group.id': ''})
-consumer.subscribe([''])
+consumer = Consumer(
+    {
+        'bootstrap.servers': '192.168.2.220:9094',
+        'group.id': 'foo',
+        'receive.message.max.bytes': 2013486160,
+    }
+)
+consumer.subscribe(['video-masking-topic'])
+
+# producer = Producer({'bootstrap.servers': '10.80.163.35:8080', 'group.id': 'foo'})
+
+# client_s3 = boto3.client(
+#     's3',
+#     aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
+#     aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY")
+# )
 
 app = FastAPI()
-
-client_s3 = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY")
-)
 
 
 async def consume_messages():
@@ -35,50 +42,53 @@ async def consume_messages():
         if message.error():
             print(f"Kafka Consumer error: {message.error()}")
             continue
-        # user_data = json.loads(message.value())
-        # user = User(**user_data)
-        # await save_user(user)
+
+        file = json.loads(message.value())
+        video_file = file['videoFile']
+
+        filename = video_file['originalName']
+        video = video_file['bytes']
+
+        bytes2mp4(video, filename)
+
+        metadata = mask_video(filename)
+        print(metadata)
 
 
-@app.post('/video')
-async def upload_video(file: UploadFile):
-    content = await file.read()
-    with open(os.path.join('./video', file.filename), 'wb') as fp:
-        fp.write(content)
-    return Response(status_code=200)
+@app.on_event("startup")
+async def startup_event():
+    await asyncio.create_task(consume_messages())
 
 
-@app.post('/videofff')
-async def download_masked_video(file: UploadFile):
-    start = time.time()
-    content = await file.read()
-    with open(os.path.join('./video', file.filename), 'wb') as fp:
-        fp.write(content)
+@app.on_event("shutdown")
+async def shutdown_event():
+    consumer.close()
 
-    images, fps, video_width, video_height = video_into_images(f'./video/{file.filename}')
+
+def bytes2mp4(file: bytearray, filename: str):
+    with open(os.path.join('./video', filename), 'wb') as fp:
+        fp.write(b64decode(file))
+
+
+def mask_video(filename):
+    images, fps, video_width, video_height = video_into_images(f'./video/{filename}')
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         face_locations_list = list(executor.map(recognize_face, images))
     crop_img_idx = 0
-    create_folder(f'./images/{file.filename}')
+    create_folder(f'./images/{filename}')
     for i, face_locations in enumerate(face_locations_list):
         for j, face_location in enumerate(face_locations):
             x, y, width, height = face_location
             cropped = images[i][y:y + height, x:x + width]  # Crop the face
-            cv2.imwrite(f'./images/{file.filename}/{i}:{j}.png', cropped)
+            cv2.imwrite(f'./images/{filename}/{i}:{j}.png', cropped)
             images[i][y:y + height, x:x + width] = 0  # Black out the face
             crop_img_idx += 1
 
-    images_into_video(images, f'./video/{file.filename.split(".")[0]}.mp4', fps=fps)
-
-    end = time.time()
-
-    sec = (end - start)
-    result = datetime.timedelta(seconds=sec)
-    print(result)
+    images_into_video(images, f'./video/{filename.split(".")[0]}.mp4', fps=fps)
 
     return {
-        "videoName": file.filename,
+        "videoName": filename,
         "createdDate": datetime.datetime.now().isoformat(),
         "frameLength": len(images),
         "fps": round(fps),
@@ -123,7 +133,7 @@ def video_into_images(video_path):
 def images_into_video(images, filename, fps):
     height, width, layers = images[0].shape
     size = (width, height)
-    out = cv2.VideoWriter(filename=filename, fourcc=cv2.VideoWriter.fourcc('M', 'P', '4', 'V'), fps=fps, frameSize=size)
+    out = cv2.VideoWriter(filename=filename, fourcc=cv2.VideoWriter.fourcc('m', 'p', '4', 'v'), fps=fps, frameSize=size)
 
     for image in images:
         out.write(image)
@@ -135,7 +145,8 @@ def compare_image(
         f1_path: str,
         f2_path: str
 ):
-    return DeepFace.verify(img1_path=f1_path, img2_path=f2_path, detector_backend='ssd', model_name='VGG-Face')['verified']
+    return DeepFace.verify(img1_path=f1_path, img2_path=f2_path, detector_backend='ssd', model_name='VGG-Face')[
+        'verified']
 
 
 def recognize_face(image):
