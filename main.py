@@ -4,6 +4,7 @@ import pandas as pd
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import FileResponse, Response
 from confluent_kafka import Consumer
+import face_recognition
 import asyncio
 import json
 import cv2
@@ -114,7 +115,7 @@ async def download_masked_video(file: UploadFile):
         "videoName": file.filename,
         "createdDate": datetime.datetime.now().isoformat(),
         "frameLength": len(images),
-        "fps": round(fps),
+        "fps": fps,
         "resolution": {
             "width": video_width,
             "height": video_height
@@ -173,7 +174,7 @@ def compare_image(
         return DeepFace.verify(
             img1_path=f1_path,
             img2_path=f2_path,
-            detector_backend='ssd',
+            detector_backend='skip',
             model_name='Dlib',
             enforce_detection=False
         )['verified']
