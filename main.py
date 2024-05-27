@@ -68,6 +68,7 @@ def mask_video(filename):
 
     global_id_dict = defaultdict(int)
     recent_frames = []
+    s3_url_dict = defaultdict(str)
     global_id = 0
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -81,6 +82,7 @@ def mask_video(filename):
             cropped_path = f'./images/{filename}/{i}:{j}.png'
             frame_cropped_paths.append(cropped_path)
             cv2.imwrite(cropped_path, cropped)
+            s3_url_dict[cropped_path] = upload_s3.upload_file_to_s3(cropped_path)
             images[i][y:y + height, x:x + width] = 0  # Black out the face
 
             found = False
@@ -124,6 +126,7 @@ def mask_video(filename):
                 'topLeftY': face_location[1],
                 'width': face_location[2],
                 'height': face_location[3],
+                'storagePath': s3_url_dict[f'./images/{file.filename}/{frame_idx}:{object_idx}.png']
             }
                 for object_idx, face_location in enumerate(face_locations_list[frame_idx])
             ]
