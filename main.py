@@ -1,40 +1,26 @@
-from collections import defaultdict
-
-import pandas as pd
-from fastapi import FastAPI, UploadFile, File
-from confluent_kafka import Consumer, Producer
-from base64 import b64decode
-from fastapi.responses import FileResponse, Response
-from confluent_kafka import Consumer
-import face_recognition
 import asyncio
-import json
-import cv2
-from mtcnn import MTCNN
-from deepface import DeepFace
-import os
-import datetime
 import concurrent.futures
-import dotenv
-import boto3
-from os import system
+import datetime
+import json
+import os
+from base64 import b64decode
+from collections import defaultdict
+import cv2
+from confluent_kafka import Consumer
+from deepface import DeepFace
+from fastapi import FastAPI
+from mtcnn import MTCNN
 
 consumer = Consumer(
     {
-        'bootstrap.servers': '192.168.2.220:9094',
+        'bootstrap.servers': '10.80.161.74:9094',
         'group.id': 'foo',
-        'receive.message.max.bytes': 2013486160,
+        'receive.message.max.bytes': 10000000000,
     }
 )
 consumer.subscribe(['video-masking-topic'])
 
 # producer = Producer({'bootstrap.servers': '10.80.163.35:8080', 'group.id': 'foo'})
-
-# client_s3 = boto3.client(
-#     's3',
-#     aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
-#     aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY")
-# )
 
 app = FastAPI()
 
@@ -92,7 +78,7 @@ def mask_video(filename):
         for j, face_location in enumerate(face_locations):
             x, y, width, height = face_location
             cropped = images[i][y:y + height, x:x + width]  # Crop the face
-            cropped_path = f'./images/{file.filename}/{i}:{j}.png'
+            cropped_path = f'./images/{filename}/{i}:{j}.png'
             frame_cropped_paths.append(cropped_path)
             cv2.imwrite(cropped_path, cropped)
             images[i][y:y + height, x:x + width] = 0  # Black out the face
@@ -118,7 +104,7 @@ def mask_video(filename):
         if len(recent_frames) > 10:
             recent_frames.pop(0)
 
-    images_into_video(images, f'./video/{file.filename.split(".")[0]}.mp4', fps=fps)
+    images_into_video(images, f'./video/{filename.split(".")[0]}.mp4', fps=fps)
 
     return {
         "videoName": filename,
@@ -133,7 +119,7 @@ def mask_video(filename):
             'frameId': frame_idx,
             'objects': [{
                 'objectId': object_idx,
-                'globalId': global_id_dict[f'./images/{file.filename}/{frame_idx}:{object_idx}.png'],
+                'globalId': global_id_dict[f'./images/{filename}/{frame_idx}:{object_idx}.png'],
                 'topLeftX': face_location[0],
                 'topLeftY': face_location[1],
                 'width': face_location[2],
