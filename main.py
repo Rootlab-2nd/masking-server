@@ -1,37 +1,21 @@
-from collections import defaultdict
-
-import pandas as pd
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse, Response
-from confluent_kafka import Consumer
-import face_recognition
-import asyncio
-import json
-import cv2
-from mtcnn import MTCNN
-from deepface import DeepFace
+import concurrent.futures
+import datetime
 import os
 import time
-import datetime
-import concurrent.futures
-import dotenv
-import boto3
-from os import system
+import upload_s3
+from collections import defaultdict
+
+import cv2
+from deepface import DeepFace
+from fastapi import FastAPI, UploadFile
+from fastapi.responses import Response
+from mtcnn import MTCNN
 
 #
 # consumer = Consumer({'bootstrap.servers': '', 'group.id': ''})
 # consumer.subscribe([''])
 #
 app = FastAPI()
-
-
-#
-# client_s3 = boto3.client(
-#     's3',
-#     aws_access_key_id=os.getenv("CREDENTIALS_ACCESS_KEY"),
-#     aws_secret_access_key=os.getenv("CREDENTIALS_SECRET_KEY")
-# )
-
 
 # async def consume_messages():
 #     current_loop = asyncio.get_running_loop()
@@ -67,6 +51,7 @@ async def download_masked_video(file: UploadFile):
 
     global_id_dict = defaultdict(int)
     recent_frames = []
+    s3_url_dict = defaultdict(str)
     global_id = 0
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -80,6 +65,7 @@ async def download_masked_video(file: UploadFile):
             cropped_path = f'./images/{file.filename}/{i}:{j}.png'
             frame_cropped_paths.append(cropped_path)
             cv2.imwrite(cropped_path, cropped)
+            s3_url_dict[cropped_path] = upload_s3.upload_file_to_s3(cropped_path)
             images[i][y:y + height, x:x + width] = 0  # Black out the face
 
             found = False
@@ -129,6 +115,7 @@ async def download_masked_video(file: UploadFile):
                 'topLeftY': face_location[1],
                 'width': face_location[2],
                 'height': face_location[3],
+                'storagePath': s3_url_dict[f'./images/{file.filename}/{frame_idx}:{object_idx}.png']
             }
                 for object_idx, face_location in enumerate(face_locations_list[frame_idx])
             ]
