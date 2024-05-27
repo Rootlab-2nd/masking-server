@@ -1,53 +1,70 @@
+import asyncio
 import concurrent.futures
 import datetime
+import json
 import os
-import time
-import upload_s3
+from base64 import b64decode
 from collections import defaultdict
-
 import cv2
+from confluent_kafka import Consumer
 from deepface import DeepFace
-from fastapi import FastAPI, UploadFile
-from fastapi.responses import Response
+from fastapi import FastAPI
 from mtcnn import MTCNN
 
-#
-# consumer = Consumer({'bootstrap.servers': '', 'group.id': ''})
-# consumer.subscribe([''])
-#
+consumer = Consumer(
+    {
+        'bootstrap.servers': '10.80.161.74:9094',
+        'group.id': 'foo',
+        'receive.message.max.bytes': 10000000000,
+    }
+)
+consumer.subscribe(['video-masking-topic'])
+
+# producer = Producer({'bootstrap.servers': '10.80.163.35:8080', 'group.id': 'foo'})
+
 app = FastAPI()
 
-# async def consume_messages():
-#     current_loop = asyncio.get_running_loop()
-#     print("start consuming...")
-#     while True:
-#         message = await current_loop.run_in_executor(None, consumer.poll, 1.0)
-#         if message is None:
-#             continue
-#         if message.error():
-#             print(f"Kafka Consumer error: {message.error()}")
-#             continue
-#         # user_data = json.loads(message.value())
-#         # user = User(**user_data)
-#         # await save_user(user)
+
+async def consume_messages():
+    current_loop = asyncio.get_running_loop()
+    print("start consuming...")
+    while True:
+        message = await current_loop.run_in_executor(None, consumer.poll, 1.0)
+        if message is None:
+            continue
+        if message.error():
+            print(f"Kafka Consumer error: {message.error()}")
+            continue
+
+        file = json.loads(message.value())
+        video_file = file['videoFile']
+
+        filename = video_file['originalName']
+        video = video_file['bytes']
+
+        bytes2mp4(video, filename)
+
+        metadata = mask_video(filename)
+        print(metadata)
 
 
-@app.post('/video')
-async def upload_video(file: UploadFile):
-    content = await file.read()
-    with open(os.path.join('./video', file.filename), 'wb') as fp:
-        fp.write(content)
-    return Response(status_code=200)
+@app.on_event("startup")
+async def startup_event():
+    await asyncio.create_task(consume_messages())
 
 
-@app.post('/videofff')
-async def download_masked_video(file: UploadFile):
-    start = time.time()
-    content = await file.read()
-    with open(os.path.join('./video', file.filename), 'wb') as fp:
-        fp.write(content)
+@app.on_event("shutdown")
+async def shutdown_event():
+    consumer.close()
 
-    images, fps, video_width, video_height = video_into_images(f'./video/{file.filename}')
+
+def bytes2mp4(file: bytearray, filename: str):
+    with open(os.path.join('./video', filename), 'wb') as fp:
+        fp.write(b64decode(file))
+
+
+def mask_video(filename):
+    images, fps, video_width, video_height = video_into_images(f'./video/{filename}')
 
     global_id_dict = defaultdict(int)
     recent_frames = []
@@ -56,13 +73,13 @@ async def download_masked_video(file: UploadFile):
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         face_locations_list = list(executor.map(recognize_face, images))
-    create_folder(f'./images/{file.filename}')
+    create_folder(f'./images/{filename}')
     for i, face_locations in enumerate(face_locations_list):
         frame_cropped_paths = []
         for j, face_location in enumerate(face_locations):
             x, y, width, height = face_location
             cropped = images[i][y:y + height, x:x + width]  # Crop the face
-            cropped_path = f'./images/{file.filename}/{i}:{j}.png'
+            cropped_path = f'./images/{filename}/{i}:{j}.png'
             frame_cropped_paths.append(cropped_path)
             cv2.imwrite(cropped_path, cropped)
             s3_url_dict[cropped_path] = upload_s3.upload_file_to_s3(cropped_path)
@@ -89,16 +106,10 @@ async def download_masked_video(file: UploadFile):
         if len(recent_frames) > 10:
             recent_frames.pop(0)
 
-    images_into_video(images, f'./video/{file.filename.split(".")[0]}.mp4', fps=fps)
-
-    end = time.time()
-
-    sec = (end - start)
-    result = datetime.timedelta(seconds=sec)
-    print(result)
+    images_into_video(images, f'./video/{filename.split(".")[0]}.mp4', fps=fps)
 
     return {
-        "videoName": file.filename,
+        "videoName": filename,
         "createdDate": datetime.datetime.now().isoformat(),
         "frameLength": len(images),
         "fps": fps,
@@ -110,7 +121,7 @@ async def download_masked_video(file: UploadFile):
             'frameId': frame_idx,
             'objects': [{
                 'objectId': object_idx,
-                'globalId': global_id_dict[f'./images/{file.filename}/{frame_idx}:{object_idx}.png'],
+                'globalId': global_id_dict[f'./images/{filename}/{frame_idx}:{object_idx}.png'],
                 'topLeftX': face_location[0],
                 'topLeftY': face_location[1],
                 'width': face_location[2],
@@ -145,7 +156,7 @@ def video_into_images(video_path):
 def images_into_video(images, filename, fps):
     height, width, layers = images[0].shape
     size = (width, height)
-    out = cv2.VideoWriter(filename=filename, fourcc=cv2.VideoWriter.fourcc('M', 'P', '4', 'V'), fps=fps, frameSize=size)
+    out = cv2.VideoWriter(filename=filename, fourcc=cv2.VideoWriter.fourcc('m', 'p', '4', 'v'), fps=fps, frameSize=size)
 
     for image in images:
         out.write(image)
