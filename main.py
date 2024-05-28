@@ -200,5 +200,3 @@ def create_folder(directory):
             os.makedirs(directory)
     except OSError:
         print('Error: Creating directory. ' + directory)
-
-print(mask_video('Sample.mp4'))
