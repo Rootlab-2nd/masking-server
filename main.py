@@ -6,6 +6,7 @@ import os
 from base64 import b64decode
 from collections import defaultdict
 import cv2
+from upload_s3 import upload_file_to_s3
 from confluent_kafka import Consumer
 from deepface import DeepFace
 from fastapi import FastAPI
@@ -82,7 +83,7 @@ def mask_video(filename):
             cropped_path = f'./images/{filename}/{i}:{j}.png'
             frame_cropped_paths.append(cropped_path)
             cv2.imwrite(cropped_path, cropped)
-            s3_url_dict[cropped_path] = upload_s3.upload_file_to_s3(cropped_path)
+            s3_url_dict[cropped_path] = upload_file_to_s3(cropped_path)
             images[i][y:y + height, x:x + width] = 0  # Black out the face
 
             found = False
@@ -108,7 +109,7 @@ def mask_video(filename):
 
     images_into_video(images, f'./video/{filename.split(".")[0]}.mp4', fps=fps)
 
-    return {
+    json_data = {
         "videoName": filename,
         "createdDate": datetime.datetime.now().isoformat(),
         "frameLength": len(images),
@@ -126,7 +127,7 @@ def mask_video(filename):
                 'topLeftY': face_location[1],
                 'width': face_location[2],
                 'height': face_location[3],
-                'storagePath': s3_url_dict[f'./images/{file.filename}/{frame_idx}:{object_idx}.png']
+                'storagePath': s3_url_dict[f'./images/{filename}/{frame_idx}:{object_idx}.png']
             }
                 for object_idx, face_location in enumerate(face_locations_list[frame_idx])
             ]
@@ -134,6 +135,11 @@ def mask_video(filename):
             for frame_idx, image in enumerate(images)
         ]
     }
+
+    with open(f'json/{filename}.json', 'w') as json_file:
+        json.dump(json_data, json_file, indent=4)
+
+    return upload_file_to_s3(f'json/{filename}.json')
 
 
 def video_into_images(video_path):
@@ -184,6 +190,7 @@ def recognize_face(image):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     detector = MTCNN()
     face_locations = [face_location['box'] for face_location in detector.detect_faces(image)]
+    print("face_loccations", face_locations)
     return face_locations
 
 
@@ -193,3 +200,5 @@ def create_folder(directory):
             os.makedirs(directory)
     except OSError:
         print('Error: Creating directory. ' + directory)
+
+print(mask_video('Sample.mp4'))
