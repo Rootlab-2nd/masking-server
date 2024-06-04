@@ -6,24 +6,33 @@ import os
 from base64 import b64decode
 from collections import defaultdict
 import cv2
+import create_m3u8
 from upload_s3 import upload_file_to_s3
-from confluent_kafka import Consumer
+import upload_m3u8
+from confluent_kafka import Consumer, Producer
 from deepface import DeepFace
 from fastapi import FastAPI
 from mtcnn import MTCNN
 
+
 consumer = Consumer(
     {
-        'bootstrap.servers': '10.80.161.74:9094',
+        'bootstrap.servers': '192.168.137.220:9094',
         'group.id': 'foo',
         'receive.message.max.bytes': 10000000000,
+        'auto.offset.reset': 'earliest'
     }
 )
 consumer.subscribe(['video-masking-topic'])
 
-# producer = Producer({'bootstrap.servers': '10.80.163.35:8080', 'group.id': 'foo'})
+producer = Producer({'bootstrap.servers': '192.168.137.220:9094'})
 
 app = FastAPI()
+
+video_directory_path = 'res/video/'
+image_directory_path = 'res/cropped_image/'
+metadata_directory_path = 'res/metadata/'
+thumbnail_directory_path = 'res/thumbnail/'
 
 
 async def consume_messages():
@@ -39,14 +48,69 @@ async def consume_messages():
 
         file = json.loads(message.value())
         video_file = file['videoFile']
+        uploader_id = file['uploaderId']
+        video_id = file['videoId']
 
-        filename = video_file['originalName']
+        producer.produce(
+            topic='notification-topic',
+            value=json.dumps({'videoId': video_id, 'receiverId': uploader_id, 'processState': 'WAITING'}),
+            headers={"__TypeId__": "kr.hs.dgsw.ciphermaskserver.global.kafka.dto.NotificationConsume"}
+        )
+        producer.flush()
+
+        uuid = video_file['uuid']
         video = video_file['bytes']
 
-        bytes2mp4(video, filename)
+        bytes2mp4(video, uuid, video_directory_path)
+        create_thumbnail(f'{video_directory_path}{uuid}.mp4', f'{thumbnail_directory_path}{uuid}.png')
 
-        metadata = mask_video(filename)
-        print(metadata)
+        producer.produce(
+            topic='notification-topic',
+            value=json.dumps({'videoId': video_id, 'receiverId': uploader_id, 'processState': 'MASKING'}),
+            headers={"__TypeId__": "kr.hs.dgsw.ciphermaskserver.global.kafka.dto.NotificationConsume"}
+        )
+        producer.flush()
+
+        metadata = mask_video(uuid, video_directory_path, image_directory_path)
+
+        producer.produce(
+            topic='notification-topic',
+            value=json.dumps({'videoId': video_id, 'receiverId': uploader_id, 'processState': 'COMPLETE'}),
+            headers={"__TypeId__": "kr.hs.dgsw.ciphermaskserver.global.kafka.dto.NotificationConsume"}
+        )
+
+        with open(f'{metadata_directory_path}{uuid}.json', 'w') as json_file:
+            json.dump(metadata, json_file, indent=4)
+
+        metadata_path = upload_file_to_s3(f'{metadata_directory_path}{uuid}.json', 'application/json')
+        m3u8_path = create_m3u8.convert_to_hls(f'{video_directory_path}{uuid}.mp4', video_directory_path, uuid)
+        video_path = upload_m3u8.upload_m3u8(m3u8_path)
+        thumbnail_path = upload_file_to_s3(f'{thumbnail_directory_path}{uuid}.png', 'image/png')
+
+        print('metadata_path:', metadata_path)
+        print('video_path:', video_path)
+        print('thumbnail_path:', thumbnail_path)
+
+        producer.produce(
+            topic='notification-topic',
+            value=json.dumps({'videoId': video_id, 'receiverId': uploader_id, 'processState': 'UPLOADED'}),
+            headers={"__TypeId__": "kr.hs.dgsw.ciphermaskserver.global.kafka.dto.NotificationConsume"}
+        )
+        producer.flush()
+
+        producer.produce(
+            topic='complete-masking-topic',
+            value=json.dumps(
+                {
+                    'videoId': video_id,
+                    'videoUrl': 'https://' + video_path,
+                    'thumbnailUrl': 'https://' + thumbnail_path,
+                    'metadataUrl': 'https://' + metadata_path
+                }
+            ),
+            headers={"__TypeId__": "kr.hs.dgsw.ciphermaskserver.global.kafka.dto.CompleteMaskingConsume"}
+        )
+        producer.flush()
 
 
 @app.on_event("startup")
@@ -59,13 +123,13 @@ async def shutdown_event():
     consumer.close()
 
 
-def bytes2mp4(file: bytearray, filename: str):
-    with open(os.path.join('./video', filename), 'wb') as fp:
+def bytes2mp4(file: bytearray, filename: str, directory_path: str):
+    with open(os.path.join(directory_path, f'{filename}.mp4'), 'wb') as fp:
         fp.write(b64decode(file))
 
 
-def mask_video(filename):
-    images, fps, video_width, video_height = video_into_images(f'./video/{filename}')
+def mask_video(filename, video_directory, image_directory):
+    images, fps, video_width, video_height = video_into_images(video_directory + f'{filename}.mp4')
 
     global_id_dict = defaultdict(int)
     recent_frames = []
@@ -74,16 +138,16 @@ def mask_video(filename):
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         face_locations_list = list(executor.map(recognize_face, images))
-    create_folder(f'./images/{filename}')
+    create_folder(image_directory_path + filename)
     for i, face_locations in enumerate(face_locations_list):
         frame_cropped_paths = []
         for j, face_location in enumerate(face_locations):
             x, y, width, height = face_location
             cropped = images[i][y:y + height, x:x + width]  # Crop the face
-            cropped_path = f'./images/{filename}/{i}:{j}.png'
+            cropped_path = f'{image_directory}{filename}/{i}:{j}.png'
             frame_cropped_paths.append(cropped_path)
             cv2.imwrite(cropped_path, cropped)
-            s3_url_dict[cropped_path] = upload_file_to_s3(cropped_path)
+            s3_url_dict[cropped_path] = upload_file_to_s3(cropped_path, 'image/png', f'{filename}:{i}:{j}.png')
             images[i][y:y + height, x:x + width] = 0  # Black out the face
 
             found = False
@@ -107,7 +171,7 @@ def mask_video(filename):
         if len(recent_frames) > 10:
             recent_frames.pop(0)
 
-    images_into_video(images, f'./video/{filename.split(".")[0]}.mp4', fps=fps)
+    images_into_video(images, f'{video_directory}{filename}.mp4', fps=fps)
 
     json_data = {
         "videoName": filename,
@@ -122,12 +186,12 @@ def mask_video(filename):
             'frameId': frame_idx,
             'objects': [{
                 'objectId': object_idx,
-                'globalId': global_id_dict[f'./images/{filename}/{frame_idx}:{object_idx}.png'],
+                'globalId': global_id_dict[f'{image_directory_path}{filename}/{frame_idx}:{object_idx}.png'],
                 'topLeftX': face_location[0],
                 'topLeftY': face_location[1],
                 'width': face_location[2],
                 'height': face_location[3],
-                'storagePath': s3_url_dict[f'./images/{filename}/{frame_idx}:{object_idx}.png']
+                'storagePath': 'https://' + s3_url_dict[f'{image_directory_path}{filename}/{frame_idx}:{object_idx}.png']
             }
                 for object_idx, face_location in enumerate(face_locations_list[frame_idx])
             ]
@@ -136,10 +200,16 @@ def mask_video(filename):
         ]
     }
 
-    with open(f'json/{filename}.json', 'w') as json_file:
-        json.dump(json_data, json_file, indent=4)
+    return json_data
 
-    return upload_file_to_s3(f'json/{filename}.json')
+
+def create_thumbnail(video_path, filename):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return
+    ret, frame = cap.read()
+    cap.release()
+    cv2.imwrite(filename, frame)
 
 
 def video_into_images(video_path):

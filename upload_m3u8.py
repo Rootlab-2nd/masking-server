@@ -1,6 +1,6 @@
 import os
 
-import upload_s3
+from upload_s3 import upload_file_to_s3
 
 
 def upload_m3u8(m3u8_path):
@@ -13,7 +13,7 @@ def upload_m3u8(m3u8_path):
         if line.endswith('.ts'):
             print(line)
             ts_file_path = os.path.join(os.path.dirname(m3u8_path), line)
-            s3_url = upload_s3.upload_file_to_s3(ts_file_path)
+            s3_url = upload_file_to_s3(ts_file_path, 'video/mp2t')
             s3_url = s3_url.split('/')[-1]
             print(s3_url)
             updated_lines.append(s3_url)
@@ -23,7 +23,5 @@ def upload_m3u8(m3u8_path):
     with open(m3u8_path, 'w', encoding='utf-8') as file:
         file.write("\n".join(updated_lines))
 
-    s3_url = upload_s3.upload_file_to_s3(m3u8_path)
+    s3_url = upload_file_to_s3(m3u8_path, 'application/x-mpegURL')
     return s3_url
-
-
